@@ -25,11 +25,11 @@ jobs:
       - name: Build & Push Frontend Docker image
         run: |
           docker build \
-          --build-arg VITE_REQ_API_HOST=http://13.124.192.99:8080 \
-          -t ${{ secrets.DOCKER_HUB_USERNAME }}/react-auth-final ./routerAndjwt
+          -t ${{ secrets.DOCKER_HUB_USERNAME }}/react-auth-final ./routerAndJwt
           echo "${{ secrets.DOCKER_HUB_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_HUB_USERNAME }}" --password-stdin
           docker push ${{ secrets.DOCKER_HUB_USERNAME }}/react-auth-final
 
+      # --build-arg VITE_REQ_API_HOST=http://13.124.192.99:8080 \   # build-arg 로 환경변수 전달 (VITE_로 시작해야함)
       # ---------------------------
       # 2️⃣ Deploy to EC2 via SSH
       # ---------------------------
@@ -53,10 +53,12 @@ jobs:
             # Run Spring Boot container 
             docker run -d --name spring_9jwt-final  \
             -p 8080:8080 \
-            --env-file ~/app-config/.env \
+            --env-file ~/spring-app/.env \
             "${{ secrets.DOCKER_HUB_USERNAME }}/spring_9jwt-final"
 
-            # with DB env variables ⤴ env file 을 미리 ec2 에 복사했음
+            # with DB env variables 
+            # env 파일에 저장하지 않고 직접 전달하는 방법
+            # secrets 에 저장된 값을 전달
             # -e DB_DRIVER="${{ secrets.DB_DRIVER }}" \
             # -e DB_USERNAME="${{ secrets.DB_USERNAME }}" \
             # -e DB_PASSWORD="${{ secrets.DB_PASSWORD }}" \ 
@@ -66,4 +68,3 @@ jobs:
             docker run -d --name react-auth-final \
             -p 80:80 \
             "${{ secrets.DOCKER_HUB_USERNAME }}"/react-auth-final
-
