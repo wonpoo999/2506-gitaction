@@ -2,37 +2,63 @@ name: Deploy to EC2
 
 on:
   push:
-    branches:
-      - main
+    branches: [ main ]
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      # ---------------------------
-      # 1️⃣ Build & Push Docker images
-      # ---------------------------
-      - name: Build & Push Backend Docker image
-        run: |
-          docker build -t ${{ secrets.DOCKER_HUB_USERNAME }}/spring_9jwt-final ./spring_9jwt
-          echo "${{ secrets.DOCKER_HUB_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_HUB_USERNAME }}" --password-stdin
-          docker push ${{ secrets.DOCKER_HUB_USERNAME }}/spring_9jwt-final
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
 
-      - name: Build & Push Frontend Docker image
-        run: |
-          docker build \
-          -t ${{ secrets.DOCKER_HUB_USERNAME }}/react-auth-final ./routerAndJwt
-          echo "${{ secrets.DOCKER_HUB_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_HUB_USERNAME }}" --password-stdin
-          docker push ${{ secrets.DOCKER_HUB_USERNAME }}/react-auth-final
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-      # --build-arg VITE_REQ_API_HOST=http://13.124.192.99:8080 \   # build-arg 로 환경변수 전달 (VITE_로 시작해야함)
-      # ---------------------------
-      # 2️⃣ Deploy to EC2 via SSH
-      # ---------------------------
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_HUB_USERNAME }}
+          password: ${{ secrets.DOCKER_HUB_PASSWORD }}
+
+      # 1) Build & Push Backend (multi-arch)
+      - name: Build & Push Backend
+        uses: docker/build-push-action@v6
+        with:
+          context: ./spring_9jwt
+          push: true
+          tags: |
+            ${{ secrets.DOCKER_HUB_USERNAME }}/spring_9jwt-final:latest
+          platforms: linux/amd64,linux/arm64
+
+      # 2) Build & Push Frontend (multi-arch) + API 주소 전달
+      - name: Build & Push Frontend
+        uses: docker/build-push-action@v6
+        with:
+          context: ./routerAndJwt
+          push: true
+          tags: |
+            ${{ secrets.DOCKER_HUB_USERNAME }}/react-auth-final:latest
+          platforms: linux/amd64,linux/arm64
+          build-args: |
+            VITE_REQ_API_HOST=${{ secrets.VITE_REQ_API_HOST }}
+          # ↑ 예: https://YOUR_EC2_PUBLIC_IP:8080 혹은 http://<도메인>:8080
+          #    Dockerfile/Vite 설정에서 ARG/ENV로 받아야 함 (VITE_*)
+
+      # 3) (선택) EC2에 환경파일 업로드가 필요하면 여기에 scp 추가
+      # - name: Upload .env to EC2
+      #   uses: appleboy/scp-action@v0.1.7
+      #   with:
+      #     host: ${{ secrets.EC2_HOST }}
+      #     username: ubuntu
+      #     key: ${{ secrets.EC2_SSH_KEY }}
+      #     source: ".github/env/prod-backend.env"
+      #     target: "~/spring-app/.env"
+
+      # 4) Deploy via SSH
       - name: Deploy to EC2 via SSH
         uses: appleboy/ssh-action@v1.0.0
         with:
@@ -40,31 +66,28 @@ jobs:
           username: ubuntu
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
-            # Pull latest images
-            docker pull ${{ secrets.DOCKER_HUB_USERNAME }}/spring_9jwt-final
-            docker pull ${{ secrets.DOCKER_HUB_USERNAME }}/react-auth-final
+            set -e
 
-            # Stop and remove existing containers if running
-            docker stop spring_9jwt-final || true
-            docker rm spring_9jwt-final || true
-            docker stop react-auth-final || true
-            docker rm react-auth-final || true
+            # 최신 이미지 pull
+            docker pull ${{ secrets.DOCKER_HUB_USERNAME }}/spring_9jwt-final:latest
+            docker pull ${{ secrets.DOCKER_HUB_USERNAME }}/react-auth-final:latest
 
-            # Run Spring Boot container 
-            docker run -d --name spring_9jwt-final  \
-            -p 8080:8080 \
-            --env-file ~/spring-app/.env \
-            "${{ secrets.DOCKER_HUB_USERNAME }}/spring_9jwt-final"
+            # 기존 컨테이너 정지/삭제
+            docker rm -f spring_9jwt-final || true
+            docker rm -f react-auth-final || true
 
-            # with DB env variables 
-            # env 파일에 저장하지 않고 직접 전달하는 방법
-            # secrets 에 저장된 값을 전달
-            # -e DB_DRIVER="${{ secrets.DB_DRIVER }}" \
-            # -e DB_USERNAME="${{ secrets.DB_USERNAME }}" \
-            # -e DB_PASSWORD="${{ secrets.DB_PASSWORD }}" \ 
-            # -e DB_URL="${{ secrets.DB_URL }}" \
+            # 백엔드 실행
+            docker run -d --name spring_9jwt-final \
+              --restart unless-stopped \
+              -p 8080:8080 \
+              --env-file ~/spring-app/.env \
+              ${{ secrets.DOCKER_HUB_USERNAME }}/spring_9jwt-final:latest
 
-            # Run Frontend container
+            # 프런트 실행 (정적 Nginx)
             docker run -d --name react-auth-final \
-            -p 80:80 \
-            "${{ secrets.DOCKER_HUB_USERNAME }}"/react-auth-final
+              --restart unless-stopped \
+              -p 80:80 \
+              ${{ secrets.DOCKER_HUB_USERNAME }}/react-auth-final:latest
+
+            # (선택) 디스크 정리
+            docker image prune -f || true
