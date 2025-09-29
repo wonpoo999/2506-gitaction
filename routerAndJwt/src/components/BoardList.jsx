@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import REQ_URL from "../js/request";
-import "./boardlist.css";
+import "./boardList.css";
 
 const BoardList = () => {
   // 게시판 글 서버 응답 저장
